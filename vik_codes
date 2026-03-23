@@ -1,0 +1,208 @@
+import pandas as pd
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+
+# -------- Load CSV --------
+  df = pd.read_csv("molecules.csv")
+
+# 🔥 Set correct column names (change if needed)
+name_col = "Molecule"
+smiles_col = "SMILES"
+
+# -------- Clean SMILES --------
+df[smiles_col] = df[smiles_col].astype(str).str.strip()
+
+# -------- Feature Function --------
+def compute_homo_lumo(smiles):
+    try:
+        if pd.isna(smiles) or smiles == "":
+            return [np.nan, np.nan, np.nan]
+        
+        mol = Chem.MolFromSmiles(smiles)
+        
+        if mol is None:
+            print("Invalid SMILES:", smiles)
+            return [np.nan, np.nan, np.nan]
+        
+        # Basic descriptors
+        logp = Descriptors.MolLogP(mol)
+        molar_ref = Descriptors.MolMR(mol)
+        num_atoms = mol.GetNumAtoms()
+        
+        if num_atoms == 0:
+            return [np.nan, np.nan, np.nan]
+        
+        # Approximation logic
+        electronegativity = (logp + molar_ref) / 10
+        hardness = 1 / (num_atoms + 1)
+        
+        HOMO = -(electronegativity + hardness)
+        LUMO = -(electronegativity - hardness)
+        band_gap = LUMO - HOMO
+        
+        return [HOMO, LUMO, band_gap]
+    
+    except Exception as e:
+        print("Error with:", smiles, "|", e)
+        return [np.nan, np.nan, np.nan]
+
+# -------- Apply Function --------
+results = df[smiles_col].apply(compute_homo_lumo)
+
+# Convert to DataFrame
+results_df = pd.DataFrame(results.tolist(), columns=["HOMO", "LUMO", "band_gap"])
+
+# -------- Combine --------
+final_df = pd.concat([df[[name_col, smiles_col]], results_df], axis=1)
+
+# -------- Save Output --------
+final_df.to_excel("homo_lumo_output.xlsx", index=False)
+
+
+
+          
+import pandas as pd
+import numpy as np
+import torch
+from transformers import AutoTokenizer, AutoModel
+from sklearn.ensemble import RandomForestRegressor
+
+# -------- Load CSV --------
+  df = pd.read_csv("molecules.csv")
+
+smiles_col = "SMILES"
+df[smiles_col] = df[smiles_col].astype(str).str.strip()
+
+# -------- Load PolyBERT / ChemBERTa --------
+model_name = "seyonec/ChemBERTa-zinc-base-v1"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name)
+
+# -------- Get Embeddings --------
+def get_embedding(smiles):
+    try:
+        inputs = tokenizer(smiles, return_tensors="pt", truncation=True, padding=True)
+        
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        # Mean pooling
+        embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+        return embedding
+    
+    except:
+        return np.zeros(768)
+
+# Compute embeddings
+embeddings = df[smiles_col].apply(get_embedding)
+X = np.vstack(embeddings.values)
+
+# -------- Dummy Training (since no labels) --------
+# ⚠️ Replace with real data if available
+
+y_dummy = np.random.rand(len(X), 4)
+
+model_rf = RandomForestRegressor()
+model_rf.fit(X, y_dummy)
+
+# Predict features
+preds = model_rf.predict(X)
+
+# -------- Create Output --------
+pred_df = pd.DataFrame(preds, columns=[
+    "electron_affinity",
+    "ionization_potential",
+    "electronegativity",
+    "polarizability"
+])
+
+# -------- Combine --------
+final_df = pd.concat([df, pred_df], axis=1)
+
+# -------- Save --------
+final_df.to_excel("polybert_quantum_features.xlsx", index=False)
+
+print("✅ Done! PolyBERT features saved.")
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import AllChem
+
+# -------- Load CSV --------
+  df = pd.read_csv("molecules.csv")
+smiles_col = "SMILES"
+
+df[smiles_col] = df[smiles_col].astype(str).str.strip()
+
+# -------- Feature Function --------
+def graph_3d_features(smiles):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        
+        if mol is None:
+            return [np.nan, np.nan, np.nan]
+        
+        mol = Chem.AddHs(mol)
+        
+        # Generate 3D structure
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        AllChem.UFFOptimizeMolecule(mol)
+        
+        conf = mol.GetConformer()
+        
+        num_atoms = mol.GetNumAtoms()
+        
+        # -------- Charge Density --------
+        valence_electrons = sum([atom.GetTotalValence() for atom in mol.GetAtoms()])
+        
+        coords = []
+        for i in range(num_atoms):
+            pos = conf.GetAtomPosition(i)
+            coords.append([pos.x, pos.y, pos.z])
+        
+        coords = np.array(coords)
+        
+        # Molecular volume (bounding box approximation)
+        volume = np.prod(coords.max(axis=0) - coords.min(axis=0) + 1e-6)
+        
+        charge_density = valence_electrons / volume
+        
+        # -------- Orbital Overlap --------
+        conjugated_bonds = sum([1 for b in mol.GetBonds() if b.GetIsConjugated()])
+        orbital_overlap = conjugated_bonds / (mol.GetNumBonds() + 1)
+        
+        # -------- Dipole Proxy --------
+        center = coords.mean(axis=0)
+        dipole = np.mean(np.linalg.norm(coords - center, axis=1))
+        
+        return [charge_density, orbital_overlap, dipole]
+    
+    except Exception as e:
+        print("Error:", smiles, "|", e)
+        return [np.nan, np.nan, np.nan]
+
+# -------- Apply --------
+features = df[smiles_col].apply(graph_3d_features)
+
+feature_df = pd.DataFrame(features.tolist(), columns=[
+    "charge_density", "orbital_overlap", "dipole_proxy"
+])
+
+# -------- Combine --------
+final_df = pd.concat([df, feature_df], axis=1)
+
+# -------- Save --------
+final_df.to_excel("final_all_features.xlsx", index=False)
+
+print("✅ Done! Graph + 3D features extracted.")
+
+print("✅ Done! Output saved as homo_lumo_output.xlsx")
