@@ -1,0 +1,147 @@
+!pip install rdkit pandas numpy transformers torch
+
+
+
+
+from google.colab import files
+uploaded = files.upload()  # select molecules__1_.csv
+
+
+
+import pandas as pd
+import numpy as np
+import torch
+from rdkit import Chem
+from rdkit.Chem import Descriptors, rdMolDescriptors, rdchem
+from transformers import AutoTokenizer, AutoModel
+
+# ─── RDKit helpers ────────────────────────────────────────────────────────────
+
+def count_pi_electrons(mol):
+    pi = 0
+    for atom in mol.GetAtoms():
+        if atom.GetIsAromatic():
+            pi += 1
+    for bond in mol.GetBonds():
+        if bond.GetIsAromatic():
+            continue
+        bt = bond.GetBondType() # Corrected line
+        if bt == rdchem.BondType.DOUBLE:
+            pi += 2
+        elif bt == rdchem.BondType.TRIPLE:
+            pi += 4
+    return pi
+
+def get_planarity_score(mol):
+    total = mol.GetNumAtoms()
+    if total == 0:
+        return 0.0
+    planar_atoms = set()
+    for atom in mol.GetAtoms():
+        if atom.GetIsAromatic():
+            planar_atoms.add(atom.GetIdx())
+    for bond in mol.GetBonds():
+        if bond.GetIsConjugated():
+            planar_atoms.add(bond.GetBeginAtomIdx())
+            planar_atoms.add(bond.GetEndAtomIdx())
+    return round(len(planar_atoms) / total, 4)
+
+def extract_rdkit_features(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return {k: None for k in [
+            "molecular_weight", "num_atoms", "num_bonds", "rotatable_bonds",
+            "aromatic_rings", "aromatic_atoms", "num_rings",
+            "conjugated_bonds", "pi_electrons", "planarity_score"
+        ]}
+    ring_info = mol.GetRingInfo()
+    return {
+        "molecular_weight":  round(Descriptors.ExactMolWt(mol), 4),
+        "num_atoms":         mol.GetNumAtoms(),
+        "num_bonds":         mol.GetNumBonds(),
+        "rotatable_bonds":   rdMolDescriptors.CalcNumRotatableBonds(mol),
+        "aromatic_rings":    sum(
+                                 1 for ring in ring_info.AtomRings()
+                                 if all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in ring)
+                             ),
+        "aromatic_atoms":    sum(1 for a in mol.GetAtoms() if a.GetIsAromatic()),
+        "num_rings":         ring_info.NumRings(),
+        "conjugated_bonds":  sum(1 for b in mol.GetBonds() if b.GetIsConjugated()),
+        "pi_electrons":      count_pi_electrons(mol),
+        "planarity_score":   get_planarity_score(mol),
+    }
+
+# ─── ChemBERTa embeddings ─────────────────────────────────────────────────────
+
+def get_chemberta_embeddings(smiles_list, batch_size=32):
+    print("Loading ChemBERTa model...")
+    model_name = "seyonec/ChemBERTa-zinc-base-v1"
+    tokenizer  = AutoTokenizer.from_pretrained(model_name)
+    model      = AutoModel.from_pretrained(model_name)
+    device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+    print(f"Running on: {device}")
+
+    all_embeddings = []
+    for i in range(0, len(smiles_list), batch_size):
+        batch   = smiles_list[i : i + batch_size]
+        encoded = tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=256,
+            return_tensors="pt"
+        ).to(device)
+
+        with torch.no_grad():
+            output = model(**encoded)
+
+        # Mean-pool over sequence length (respecting padding mask)
+        mask = encoded["attention_mask"].unsqueeze(-1).float()
+        emb  = (output.last_hidden_state * mask).sum(1) / mask.sum(1)
+        all_embeddings.append(emb.cpu().numpy())
+        print(f"  Processed {min(i+batch_size, len(smiles_list))}/{len(smiles_list)}")
+
+    return np.vstack(all_embeddings)
+
+# ─── Main pipeline ────────────────────────────────────────────────────────────
+
+# Load CSV
+df = pd.read_csv("molecules (1).csv")
+print(f"Loaded {len(df)} molecules\n")
+
+# Step 1: RDKit features
+print("Extracting RDKit features...")
+rdkit_feats = df["SMILES"].apply(extract_rdkit_features).apply(pd.Series)
+df = pd.concat([df, rdkit_feats], axis=1)
+print("RDKit features done!\n")
+
+# Step 2: ChemBERTa embeddings  (768-dim per molecule)
+embeddings = get_chemberta_embeddings(df["SMILES"].tolist())
+emb_df     = pd.DataFrame(
+    embeddings,
+    columns=[f"chemberta_{i}" for i in range(embeddings.shape[1])],
+    index=df.index
+)
+df = pd.concat([df, emb_df], axis=1)
+
+print(f"\n✅ Done! Final shape: {df.shape}")
+print(f"   → 10 RDKit features + {embeddings.shape[1]} ChemBERTa embedding dims\n")
+
+# Preview RDKit features
+rdkit_cols = [
+    "Molecule", "molecular_weight", "num_atoms", "num_bonds",
+    "rotatable_bonds", "aromatic_rings", "aromatic_atoms",
+    "num_rings", "conjugated_bonds", "pi_electrons", "planarity_score"
+]
+print(df[rdkit_cols].to_string(index=False))
+
+
+
+
+
+
+df.to_csv("molecules_features.csv", index=False)
+from google.colab import files
+files.download("molecules_features.csv")
