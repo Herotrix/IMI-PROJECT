@@ -1,0 +1,70 @@
+import pandas as pd
+from rdkit import Chem
+from rdkit.Chem import Descriptors, Lipinski, Crippen
+from transformers import AutoTokenizer, AutoModel
+import torch
+
+
+tokenizer = AutoTokenizer.from_pretrained("seyonec/PubChem10M_SMILES_BPE_450k")
+model = AutoModel.from_pretrained("seyonec/PubChem10M_SMILES_BPE_450k")
+
+
+df = pd.read_csv("molecules.csv")
+
+
+def get_embedding(smiles):
+    inputs = tokenizer(smiles, return_tensors="pt", truncation=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    return outputs.last_hidden_state[:, 0, :].squeeze().numpy()
+
+
+def extract_all_features(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+
+    if mol is None:
+        return pd.Series([None]*11)
+
+   
+    hetero_atoms = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() not in [1, 6])
+    smiles_length = len(smiles)
+    polar_surface_area = Descriptors.TPSA(mol)
+
+   
+    donors = Lipinski.NumHDonors(mol)
+    acceptors = Lipinski.NumHAcceptors(mol)
+    logp = Crippen.MolLogP(mol)
+    molar_refractivity = Crippen.MolMR(mol)
+
+
+    topological_index = Descriptors.BalabanJ(mol)
+    valence_electrons = Descriptors.NumValenceElectrons(mol)
+
+    rotatable_bonds = Descriptors.NumRotatableBonds(mol)
+    stability_index = 1 / (rotatable_bonds + 1)
+
+  
+    embedding = get_embedding(smiles)
+    embedding_mean = embedding.mean()
+
+    return pd.Series([
+        hetero_atoms, smiles_length, polar_surface_area,
+        donors, acceptors, logp, molar_refractivity,
+        topological_index, valence_electrons, stability_index,
+        embedding_mean
+    ])
+
+
+columns = [
+    'hetero_atoms', 'smiles_length', 'polar_surface_area',
+    'donors', 'acceptors', 'logp', 'molar_refractivity',
+    'topological_index', 'valence_electrons', 'stability_index',
+    'bert_embedding'
+]
+
+df[columns] = df['SMILES'].apply(extract_all_features)
+
+
+df.to_excel("final_combined_output.xlsx", index=False)
+
+print(" Final combined file created!")
