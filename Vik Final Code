@@ -1,0 +1,120 @@
+!pip install rdkit
+import pandas as pd
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import AllChem
+
+# -------- Load CSV --------
+df = pd.read_csv("molecules.csv")
+smiles_col = "SMILES"
+
+df[smiles_col] = df[smiles_col].astype(str).str.strip()
+
+# -------- Feature Function --------
+def compute_advanced_features(smiles):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        
+        if mol is None:
+            return [np.nan]*10
+        
+        mol = Chem.AddHs(mol)
+
+        # Generate 3D conformer
+        if AllChem.EmbedMolecule(mol, randomSeed=42) != 0:
+            AllChem.EmbedMolecule(mol, useRandomCoords=True)
+
+        AllChem.UFFOptimizeMolecule(mol)
+
+        conf = mol.GetConformer()
+        num_atoms = mol.GetNumAtoms()
+        num_bonds = mol.GetNumBonds()
+
+        # -------- Coordinates --------
+        coords = np.array([
+            [conf.GetAtomPosition(i).x,
+             conf.GetAtomPosition(i).y,
+             conf.GetAtomPosition(i).z]
+            for i in range(num_atoms)
+        ])
+
+        # -------- Atomic Properties --------
+        atomic_nums = np.array([atom.GetAtomicNum() for atom in mol.GetAtoms()])
+        valence = np.array([atom.GetTotalValence() for atom in mol.GetAtoms()])
+
+        # -------- Volume --------
+        volume = np.prod(coords.max(axis=0) - coords.min(axis=0) + 1e-6)
+
+        # -------- 1. Charge Density --------
+        charge_density = valence.sum() / volume
+
+        # -------- 2. Orbital Overlap --------
+        conjugated = sum([1 for b in mol.GetBonds() if b.GetIsConjugated()])
+        orbital_overlap = conjugated / (num_bonds + 1)
+
+        # -------- 3. Dipole Proxy --------
+        center = coords.mean(axis=0)
+        dipole_proxy = np.mean(np.linalg.norm(coords - center, axis=1))
+
+        # -------- 4. Electronegativity --------
+        electronegativity = np.mean(atomic_nums) / 10
+
+        # -------- 5. Ionization Potential --------
+        ionization_potential = electronegativity + (1 / (num_atoms + 1))
+
+        # -------- 6. Electron Affinity --------
+        electron_affinity = electronegativity - (1 / (num_atoms + 1))
+
+        # -------- 7. Polarizability --------
+        polarizability = volume / num_atoms
+
+        # -------- 8. HOMO --------
+        HOMO = -ionization_potential
+
+        # -------- 9. LUMO --------
+        LUMO = -electron_affinity
+
+        # -------- 10. Band Gap --------
+        band_gap = LUMO - HOMO
+
+        return [
+            charge_density,
+            orbital_overlap,
+            dipole_proxy,
+            electron_affinity,
+            ionization_potential,
+            electronegativity,
+            polarizability,
+            HOMO,
+            LUMO,
+            band_gap
+        ]
+
+    except Exception as e:
+        print("Error:", smiles, "|", e)
+        return [np.nan]*10
+
+
+# -------- Apply --------
+features = df[smiles_col].apply(compute_advanced_features)
+
+feature_df = pd.DataFrame(features.tolist(), columns=[
+    "charge_density",
+    "orbital_overlap",
+    "dipole_proxy",
+    "electron_affinity",
+    "ionization_potential",
+    "electronegativity",
+    "polarizability",
+    "HOMO",
+    "LUMO",
+    "band_gap"
+])
+
+# -------- Combine --------
+final_df = pd.concat([df, feature_df], axis=1)
+
+# -------- Save --------
+final_df.to_excel("method3_all_features.xlsx", index=False)
+
+print("✅ All 10 features extracted using Method 3!")
