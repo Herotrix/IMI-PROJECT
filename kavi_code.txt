@@ -1,0 +1,92 @@
+!pip install rdkit pandas numpy
+
+
+
+from google.colab import files
+uploaded = files.upload()  # select molecules__1_.csv
+
+
+
+
+import pandas as pd
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import Descriptors, rdMolDescriptors, rdchem
+
+
+def count_pi_electrons(mol):
+    pi = 0
+    for atom in mol.GetAtoms():
+        if atom.GetIsAromatic():
+            pi += 1
+    for bond in mol.GetBonds():
+        if bond.GetIsAromatic():
+            continue
+        bt = bond.GetBondType()
+        if bt == rdchem.BondType.DOUBLE:
+            pi += 2
+        elif bt == rdchem.BondType.TRIPLE:
+            pi += 4
+    return pi
+
+
+def get_planarity_score(mol):
+    total = mol.GetNumAtoms()
+    if total == 0:
+        return 0.0
+    planar_atoms = set()
+    for atom in mol.GetAtoms():
+        if atom.GetIsAromatic():
+            planar_atoms.add(atom.GetIdx())
+    for bond in mol.GetBonds():
+        if bond.GetIsConjugated():
+            planar_atoms.add(bond.GetBeginAtomIdx())
+            planar_atoms.add(bond.GetEndAtomIdx())
+    return round(len(planar_atoms) / total, 4)
+
+
+def extract_features(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return {k: None for k in [
+            "molecular_weight", "num_atoms", "num_bonds",
+            "rotatable_bonds", "aromatic_rings", "aromatic_atoms",
+            "num_rings", "conjugated_bonds", "pi_electrons", "planarity_score"
+        ]}
+
+    ring_info = mol.GetRingInfo()
+
+    return {
+        "molecular_weight":  round(Descriptors.ExactMolWt(mol), 4),
+        "num_atoms":         mol.GetNumAtoms(),
+        "num_bonds":         mol.GetNumBonds(),
+        "rotatable_bonds":   rdMolDescriptors.CalcNumRotatableBonds(mol),
+        "aromatic_rings":    sum(
+                                 1 for ring in ring_info.AtomRings()
+                                 if all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in ring)
+                             ),
+        "aromatic_atoms":    sum(1 for a in mol.GetAtoms() if a.GetIsAromatic()),
+        "num_rings":         ring_info.NumRings(),
+        "conjugated_bonds":  sum(1 for b in mol.GetBonds() if b.GetIsConjugated()),
+        "pi_electrons":      count_pi_electrons(mol),
+        "planarity_score":   get_planarity_score(mol),
+    }
+
+
+# ── Load CSV ─────────────────────────────────────────────────────────────────
+df = pd.read_csv("molecules (1) (2).csv")
+print(f"Loaded {len(df)} molecules")
+
+# ── Extract ───────────────────────────────────────────────────────────────────
+features = df["SMILES"].apply(extract_features).apply(pd.Series)
+df = pd.concat([df, features], axis=1)
+
+# ── Preview ───────────────────────────────────────────────────────────────────
+print(df.to_string(index=False))
+
+
+
+df.to_csv("molecules_features.csv", index=False)
+
+from google.colab import files
+files.download("molecules_features.csv")
