@@ -1,0 +1,63 @@
+!pip install rdkit
+import pandas as pd
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit.DataStructs import TanimotoSimilarity
+
+# -------- Load your dataset --------
+file_path = "molecules.csv"   # 🔥 change if needed
+df = pd.read_csv(file_path)
+
+# -------- Column names (based on your dataset) --------
+name_col = "Molecule"
+smiles_col = "SMILES"
+
+# -------- Clean SMILES --------
+df[smiles_col] = df[smiles_col].astype(str).str.strip()
+
+# -------- Generate fingerprints --------
+def get_fingerprint(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    return AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+
+df["fingerprint"] = df[smiles_col].apply(get_fingerprint)
+
+# -------- Remove invalid molecules --------
+df = df[df["fingerprint"].notnull()].reset_index(drop=True)
+
+# -------- Tanimoto Filtering --------
+threshold = 0.85  # 🔥 Recommended
+
+selected_indices = []
+
+for i in range(len(df)):
+    keep = True
+    
+    for j in selected_indices:
+        sim = TanimotoSimilarity(
+            df.loc[i, "fingerprint"],
+            df.loc[j, "fingerprint"]
+        )
+        
+        if sim > threshold:
+            keep = False
+            break
+    
+    if keep:
+        selected_indices.append(i)
+
+# -------- Final dataset --------
+filtered_df = df.loc[selected_indices]
+
+# Drop fingerprint column
+filtered_df = filtered_df.drop(columns=["fingerprint"])
+
+# -------- Save output --------
+filtered_df.to_csv("filtered_molecules.csv", index=False)
+
+# -------- Print summary --------
+print("✅ Tanimoto filtering complete!")
+print(f"Original molecules: {len(df)}")
+print(f"Filtered molecules: {len(filtered_df)}")
