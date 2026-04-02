@@ -28,7 +28,7 @@ df["fingerprint"] = df[smiles_col].apply(get_fingerprint)
 df = df[df["fingerprint"].notnull()].reset_index(drop=True)
 
 # -------- Tanimoto Filtering --------
-threshold = 0.85  # 🔥 Recommended
+threshold = 0.80  # 🔥 Recommended
 
 selected_indices = []
 
